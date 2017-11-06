@@ -24,13 +24,12 @@ char  cmdline[BUFSIZ];
 
 void fatal(char* str);
 void execute_cmdline(char* cmd);
-int parse_cmdgrp(char* cmdGrp);
+int  parse_cmdgrp(char* cmdGrp);
 int  makelist(char* s, const char* delimiters, char** list, int MAX_LIST);
 
 int main(int argc, char* argv[]) {
 	pid_t pid;
 	int token;
-	int background;
 
 	//시작과 동시에는 home directory에 존재한다.
 	if(chdir(getenv("HOME")) == -1) {
@@ -42,9 +41,6 @@ int main(int argc, char* argv[]) {
 		fputs(prompt, stdout);
 		fgets(cmdline, BUFSIZ, stdin);
 		cmdline[strlen(cmdline) - 1] = '\0';
-
-		background = 0;
-
 		if(!strcmp(cmdline, "exit")) {
 			//exit은 fork를 사용하지 않고 해당 쉘에서 곧바로 종료
 			printf("Good bye~\n");
@@ -95,6 +91,7 @@ void execute_cmdline(char* cmdline) {
 	int background;
 	int result;
 
+	memset(cmdGrps, 0, sizeof(cmdGrps));
 	count = makelist(cmdline, ";", cmdGrps, MAX_CMD_GRP);
 
 		
@@ -106,9 +103,12 @@ void execute_cmdline(char* cmdline) {
 			default: 
 				if(background == 1) {
 					//background task의 경우 waitpid의 WNOHANG 옵션을 이용하여 대기하지 않는다.
-					result = waitpid(-1, &status, WNOHANG);
+					//또한 "방금" fork된 child를 대기해야 하므로 pid를 첫번째 인자로 넘겨준다.
+					result = waitpid(pid, &status, WNOHANG);
 				}else if(background == 0) {
-					wait(&status);
+					//단순히 wait으로 대기하게 되면 임의의 자식이 reap될 수 있기 때문에 waitpid에 pid를 넘겨주고 세번째 인자는
+					//0을 넘겨주어 기존 특정 프로세스를 기다리는 wait의 효과를 내어주었다.
+					result = waitpid(pid, &status, 0);
 				}else {
 					fatal("execute_cmdline error");
 				}
