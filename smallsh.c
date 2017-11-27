@@ -1,8 +1,8 @@
 /*
    12131619 컴퓨터공학과 최재원
-   2017.11.19
-   Shell Project #2
-*/
+   2017.11.27
+   Shell Project #3
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,19 +15,22 @@
 
 #define MAX_CMD_ARG 10
 #define MAX_CMD_GRP 10
+#define PERM 0666
 
 const char* prompt = "mysh> ";
 
 char* cmdGrps[MAX_CMD_GRP];
 char* cmdVector[MAX_CMD_ARG];
+char* buffer[MAX_CMD_ARG];
 char  cmdline[BUFSIZ];
-
+char  finish[BUFSIZ];
 
 void fatal(char* str);
 void execute_cmdline(char* cmd);
 int  parse_cmdgrp(char* cmdGrp);
 int  makelist(char* s, const char* delimiters, char** list, int MAX_LIST);
 void sigchld_handler(int signo);
+void execute_program(char* argv);		//start -> end 까지가 주어진 argument 
 
 int main(int argc, char* argv[]) {
 	pid_t pid;
@@ -65,7 +68,7 @@ int main(int argc, char* argv[]) {
 			//주어진 입력을 수행하도록 할 수 있지만 현재 진행중인 프로세스가 아닌 생성된 프로세스의 working directory가 변경되기 때문에
 			//chdir함수를 통하여 직접 이동시켜주어야 한다.
 			makelist(cmdline, " \t", cmdVector, MAX_CMD_ARG);
-			
+
 			if(cmdVector[1] == NULL || !strcmp(cmdVector[1], "~")) {
 				//cd에 주어진 인자가 아무것도 없거나 ~ 인 경우 home directory로 이동하게 해주어야 하는데
 				// ~ 은 실제 홈디렉토리의 주소가 아니기 때문에 환경변수에 저장되어 있는 값을 이용해 주어야 한다.
@@ -101,17 +104,19 @@ void fatal(char* str) {
 void execute_cmdline(char* cmdline) {
 	pid_t pid;
 	int status;
-	int count = 0;
-	int i = 0;
+	int stateCount = 0, commandCount = 0;
+	int i = 0, j = 0;
 	int background;
 	int result;
+	int p[2];
 
 	memset(cmdGrps, 0, sizeof(cmdGrps));
-	count = makelist(cmdline, ";", cmdGrps, MAX_CMD_GRP);
+	stateCount = makelist(cmdline, ";", cmdGrps, MAX_CMD_GRP);
 
-		
-	for(i = 0; i < count; ++i) {
-		background = parse_cmdgrp(cmdGrps[i]);			//주어진 cmdGrps에 나누어진 명령을 다시 추가 argument로 나누어 cmdVector에 저장한다. (반환값은 background의 경우 1)
+	for(i = 0; i < stateCount; ++i) {
+		commandCount = makelist(cmdGrps[i], "|", buffer, MAX_CMD_ARG);		//|을 기준으로 나눈다.
+		background = parse_cmdgrp(buffer[commandCount - 1]);				//맨 마지막 커맨드로 background 여부 확인
+	
 		switch(pid = fork()) {
 			case -1: 
 				fatal("fork error");
@@ -127,8 +132,23 @@ void execute_cmdline(char* cmdline) {
 				if(background == 0)
 					tcsetpgrp(STDIN_FILENO, getpgid(0));			//자신의 부모(위의 setpgid로 자신으로 변경되어 있음)가 터미널 제어권을 갖는다.
 
-				execvp(cmdVector[0], cmdVector); //자식 프로세스는 주어진 프로세스를 수행한다.
-				fatal("execvp error");
+				for(j = 0; j < commandCount - 1; ++j) {
+					pipe(p);
+					switch(pid = fork()) {
+						case -1:
+							fatal("fork error");
+						case 0:
+							dup2(p[1], 1);		//A | B일때 A의 stdout은 파이프의 write로
+							close(p[0]);
+							close(p[1]);
+							execute_program(buffer[j]);
+						default:
+							dup2(p[0], 0);		//이전 친구가 준 파이프를 stdin으로 한다.
+							close(p[0]);
+							close(p[1]);
+					}
+				}
+				execute_program(buffer[j]);
 			default: 
 				if(background == 1) {
 					//background task의 경우 waitpid의 WNOHANG 옵션을 이용하여 대기하지 않는다.
@@ -147,6 +167,7 @@ void execute_cmdline(char* cmdline) {
 				fflush(stdin);
 				fflush(stdout);
 		}
+
 	}
 }
 
@@ -156,6 +177,8 @@ int parse_cmdgrp(char* cmdGrp) {
 	int count = 0;
 	int ret = -1;
 	count = makelist(cmdGrp, " \t", cmdVector, MAX_CMD_ARG);			//하나의 명령에 들어있는 여러 옵션들을 makelist를 이용하여 cmdVector배열에 넣어준다.
+
+	cmdVector[count] = NULL;
 
 	if(!strcmp(cmdVector[count - 1], "&")) {
 		//background process인 경우 내부에서 fork을 이용하여 새롭게 하나의 프로세스를 생성 후 주어진 명령을 수행하게 한 뒤
@@ -173,16 +196,16 @@ int parse_cmdgrp(char* cmdGrp) {
 int makelist(char* s, const char* delimiters, char** list, int MAX_LIST) {
 	int numTokens = 0;
 	char* snew = NULL;
+	char* temp = malloc(strlen(s) + 1);
+	strcpy(temp, s);
 
 	if((s == NULL) || (delimiters == NULL)) return -1;
 
-	snew = s + strspn(s, delimiters);		//delimiter skip then snew pointer is pointing to start of the command
-
-	if((list[numTokens] = strtok(snew, delimiters)) == NULL) {
+	snew = temp + strspn(temp, delimiters);		//delimiter skip then snew pointer is pointing to start of the command
+	if((list[numTokens] = strtok(temp, delimiters)) == NULL) {
 		//token이 하나도 없다면 0을 반환한다.
 		return numTokens;
 	}
-
 	numTokens = 1;
 	while(1) {
 		if((list[numTokens] = strtok(NULL, delimiters)) == NULL) break;	//모두 다 찾은 경우
@@ -197,4 +220,29 @@ int makelist(char* s, const char* delimiters, char** list, int MAX_LIST) {
 //SIGCHLD signal이 오면 그 때 존재하는 모든 zombie process를 reap해준다.
 void sigchld_handler(int signo) {
 	while(waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+void execute_program(char* argv) {
+	int fd;
+	int i;
+	parse_cmdgrp(argv);			//탭, 띄어쓰기로 인자 구분
+
+	//cmdVector로 구분되어진 인자에 따라서 redirection이 존재한다면 그에 맞게 수정해준다.
+	for(i = 0; cmdVector[i]; ++i) {
+		if(!strcmp(cmdVector[i], ">")) {			//stdout인 경우
+			if((fd = open(cmdVector[i + 1], O_CREAT | O_TRUNC | O_WRONLY, PERM)) == -1)		//파일을 열어준 뒤
+				fatal("file open error");
+			dup2(fd, 1);			//현재 프로세스의 stdout을 해당 파일로 바꾸어 준다.
+			close(fd);
+			cmdVector[i] = NULL;		// execvp함수는 두 번째 인자로 null-terminated를 사용한다는 점을 이용하여 redirection 이후의 인자를 받지 못하도록 null값으로 수정해준다.
+		}else if(!strcmp(cmdVector[i], "<")) {			//stdin의 경우
+			if((fd = open(cmdVector[i + 1], O_RDONLY)) == -1)
+				fatal("file open error");
+			dup2(fd, 0);			//stdin을 해당 파일로 바꾸어 준다.
+			close(fd);
+			cmdVector[i] = NULL;
+		}
+	}
+	execvp(cmdVector[0], cmdVector);
+	fatal("execute_program error");
 }
